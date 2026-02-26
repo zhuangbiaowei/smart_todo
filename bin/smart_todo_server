@@ -1,0 +1,7 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'rack'
+
+app, = Rack::Builder.parse_file(File.expand_path('../config.ru', __dir__))
+Rack::Handler::WEBrick.run(app, Port: ENV.fetch('PORT', 4567).to_i)
