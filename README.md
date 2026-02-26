@@ -20,7 +20,7 @@ bundle install
 ```ruby
 require 'smart_todo'
 
-client = SmartTodo::Client.new(redis_url: 'redis://127.0.0.1:6379/0')
+client = SmartTodo::Client.new(redis_url: 'redis://127.0.0.1:6479/0')
 
 root = client.add_task(title: '发布v1', required_skills: ['planning'])
 child = client.add_task(
@@ -103,16 +103,47 @@ bundle exec ruby bin/smart_todo_server
 
 其中 `result` 支持：`success`, `failed`, `suspended`, `blocked`, `in_progress`。
 
+### 5) 在父任务下批量新增子任务
+
+`POST /tasks/:id/subtasks`
+
+```json
+{
+  "subtasks": [
+    {"title": "实现接口A", "priority": 5},
+    {"title": "实现接口B", "required_skills": ["ruby"]}
+  ]
+}
+```
+
+### 6) 在父任务下修改子任务
+
+`PATCH /tasks/:id/subtasks/:subtask_id`
+
+```json
+{
+  "updates": {"priority": 9},
+  "add_dependencies": ["<task_id_1>"],
+  "remove_dependencies": []
+}
+```
+
+### 7) 在父任务下删除子任务
+
+`DELETE /tasks/:id/subtasks/:subtask_id`
+
 ## 任务归属策略
 
 同一任务允许多个 Agent 领取并上报。
 
 - 所有上报会被保留
 - 若有多个 `success`，默认选择最早成功上报者作为 `actual_executor`
-- 任务状态会被推进为 `completed`
+- 若任务存在子任务，只有所有子任务都为 `completed`，该任务才能被推进为 `completed`
 
 ## 测试
 
 ```bash
 bundle exec rake test
+# 或
+rake test
 ```

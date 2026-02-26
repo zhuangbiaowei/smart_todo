@@ -65,8 +65,38 @@ module SmartTodo
         redis.sadd(children_key(updates['parent_id']), id) if updates['parent_id']
       end
 
-      redis.hset(task_key(id), flatten_task(patched))
+      flattened = flatten_task(patched)
+      redis.hset(task_key(id), flattened)
+      clear_nil_fields(task_key(id), patched)
       patched
+    end
+
+    def delete_task(id)
+      current = task(id)
+      raise NotFoundError, "task #{id} not found" unless current
+
+      dependency_ids = dependencies(id)
+      dependent_ids = redis.smembers(dependents_key(id))
+
+      redis.multi do |tx|
+        dependency_ids.each { |dep_id| tx.srem(dependents_key(dep_id), id) }
+        dependent_ids.each { |dependent_id| tx.srem(dependencies_key(dependent_id), id) }
+
+        tx.srem(tasks_key, id)
+        tx.srem(status_key(current['status']), id)
+        tx.srem(children_key(current['parent_id']), id) if current['parent_id']
+        tx.zrem(index_by_created_key, id)
+        tx.del(
+          task_key(id),
+          dependencies_key(id),
+          dependents_key(id),
+          children_key(id),
+          assignments_key(id),
+          reports_key(id)
+        )
+      end
+
+      current
     end
 
     def add_dependency(task_id, dependency_id)
@@ -123,7 +153,7 @@ module SmartTodo
         'created_at' => task['created_at'],
         'updated_at' => task['updated_at'],
         'actual_executor' => task['actual_executor']
-      }
+      }.compact
     end
 
     def hydrate_task(raw)
@@ -151,5 +181,12 @@ module SmartTodo
     def children_key(task_id) = "smart_todo:task:#{task_id || 'root'}:children"
     def assignments_key(task_id) = "smart_todo:task:#{task_id}:assignments"
     def reports_key(task_id) = "smart_todo:task:#{task_id}:reports"
+
+    def clear_nil_fields(key, task)
+      nil_fields = %w[description parent_id actual_executor].select { |field| task[field].nil? }
+      return if nil_fields.empty?
+
+      redis.hdel(key, *nil_fields)
+    end
   end
 end

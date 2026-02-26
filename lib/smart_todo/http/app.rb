@@ -62,6 +62,41 @@ module SmartTodo
         JSON.generate(task)
       end
 
+      post '/tasks/:id/subtasks' do
+        payload = json_params
+        subtasks = service.add_subtasks(
+          parent_task_id: params['id'],
+          subtasks: payload.fetch('subtasks')
+        )
+        status 201
+        JSON.generate(subtasks)
+      end
+
+      patch '/tasks/:id/subtasks/:subtask_id' do
+        payload = json_params
+        task = service.reshape_subtask(
+          parent_task_id: params['id'],
+          subtask_id: params['subtask_id'],
+          updates: payload.fetch('updates', {}),
+          add_dependencies: payload.fetch('add_dependencies', []),
+          remove_dependencies: payload.fetch('remove_dependencies', [])
+        )
+        JSON.generate(task)
+      end
+
+      delete '/tasks/:id/subtasks/:subtask_id' do
+        JSON.generate(
+          service.delete_subtask(
+            parent_task_id: params['id'],
+            subtask_id: params['subtask_id']
+          )
+        )
+      end
+
+      get '/tasks' do
+        JSON.generate(service.list_tasks(status: params['status']))
+      end
+
       get '/tasks/:id' do
         JSON.generate(service.fetch_task(task_id: params['id']))
       end
@@ -74,6 +109,11 @@ module SmartTodo
       error SmartTodo::ValidationError, KeyError, JSON::ParserError do
         status 422
         JSON.generate(error: env['sinatra.error'].message)
+      end
+
+      not_found do
+        status 404
+        JSON.generate(error: 'not found')
       end
 
       error do

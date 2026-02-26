@@ -30,6 +30,8 @@ module SmartTodo
       validate_exists!(task_id)
       add_dependencies.each { |dep| validate_exists!(dep) }
       remove_dependencies.each { |dep| validate_exists!(dep) }
+      validate_parent!(updates['parent_id']) if updates.key?('parent_id') && updates['parent_id']
+      ensure_children_completed!(task_id) if updates['status'] == 'completed'
 
       task = store.update_task(task_id, updates)
       add_dependencies.each { |dep| store.add_dependency(task_id, dep) }
@@ -56,6 +58,9 @@ module SmartTodo
       task = store.task(task_id)
       raise NotFoundError, "task #{task_id} not found" unless task
 
+      next_status = map_result_to_status(result)
+      ensure_children_completed!(task_id) if next_status == 'completed'
+
       report = {
         'agent_id' => agent_id,
         'result' => result,
@@ -65,17 +70,66 @@ module SmartTodo
       }
       store.append_report(task_id, report)
 
-      next_status = map_result_to_status(result)
       store.update_task(task_id, 'status' => next_status) if next_status
       resolve_executor!(task_id)
       enrich(store.task(task_id))
     end
 
-    def fetch_task(task_id)
+    def fetch_task(task_id:)
       task = store.task(task_id)
       raise NotFoundError, "task #{task_id} not found" unless task
 
       enrich(task)
+    end
+
+    def list_tasks(status: nil)
+      tasks = store.all_task_ids.filter_map { |id| store.task(id) }
+      tasks = tasks.select { |task| task['status'] == status } if status
+      tasks.sort_by { |task| [-task['priority'], task['created_at']] }
+           .map { |task| enrich(task) }
+    end
+
+    def add_subtasks(parent_task_id:, subtasks:)
+      validate_exists!(parent_task_id)
+      raise ValidationError, 'subtasks must be a non-empty array' unless subtasks.is_a?(Array) && !subtasks.empty?
+
+      subtasks.map do |attrs|
+        add_task(
+          title: attrs.fetch('title'),
+          description: attrs['description'],
+          parent_id: parent_task_id,
+          dependencies: attrs.fetch('dependencies', []),
+          required_skills: attrs.fetch('required_skills', []),
+          priority: attrs.fetch('priority', 0),
+          metadata: attrs.fetch('metadata', {})
+        )
+      end
+    end
+
+    def reshape_subtask(parent_task_id:, subtask_id:, updates: {}, add_dependencies: [], remove_dependencies: [])
+      validate_subtask_of_parent!(parent_task_id, subtask_id)
+      if updates.key?('parent_id') && updates['parent_id'] != parent_task_id
+        raise ValidationError, 'subtask parent_id cannot be changed via this endpoint'
+      end
+
+      updates = updates.merge('parent_id' => parent_task_id)
+      reshape_task(
+        task_id: subtask_id,
+        updates: updates,
+        add_dependencies: add_dependencies,
+        remove_dependencies: remove_dependencies
+      )
+    end
+
+    def delete_subtask(parent_task_id:, subtask_id:)
+      validate_subtask_of_parent!(parent_task_id, subtask_id)
+      raise ValidationError, "subtask #{subtask_id} has children and cannot be deleted" unless store.children(subtask_id).empty?
+
+      deleted = store.delete_task(subtask_id)
+      {
+        'deleted_task_id' => deleted['id'],
+        'parent_task_id' => parent_task_id
+      }
     end
 
     private
@@ -121,6 +175,23 @@ module SmartTodo
       return unless winner
 
       store.update_task(task_id, 'actual_executor' => winner['agent_id'], 'status' => 'completed')
+    end
+
+    def ensure_children_completed!(task_id)
+      incomplete = store.children(task_id).any? do |child_id|
+        child = store.task(child_id)
+        child && child['status'] != 'completed'
+      end
+      return unless incomplete
+
+      raise ValidationError, "task #{task_id} cannot be completed until all subtasks are completed"
+    end
+
+    def validate_subtask_of_parent!(parent_task_id, subtask_id)
+      validate_exists!(parent_task_id)
+      child = store.task(subtask_id)
+      raise NotFoundError, "task #{subtask_id} not found" unless child
+      raise ValidationError, "task #{subtask_id} is not a subtask of #{parent_task_id}" unless child['parent_id'] == parent_task_id
     end
 
     def validate_parent!(parent_id)
