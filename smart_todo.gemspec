@@ -21,6 +21,8 @@ Gem::Specification.new do |spec|
   spec.require_paths = ['lib']
 
   spec.add_dependency 'json', '>= 2.6'
+  spec.add_dependency 'rackup', '>= 2.1'
   spec.add_dependency 'redis', '>= 5.0'
   spec.add_dependency 'sinatra', '>= 3.0'
+  spec.add_dependency 'webrick', '>= 1.8'
 end
