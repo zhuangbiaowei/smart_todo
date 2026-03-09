@@ -8,6 +8,8 @@ module SmartTodo
     class App < Sinatra::Base
       configure do
         set :show_exceptions, false
+        set :dump_errors, false
+        set :raise_errors, false
       end
 
       before do
@@ -16,11 +18,17 @@ module SmartTodo
 
       post '/tasks' do
         payload = json_params
+        parent_id = payload['parent_id'] || payload['parent_task_id']
         task = service.add_task(
           title: payload.fetch('title'),
           description: payload['description'],
-          parent_id: payload['parent_id'],
+          parent_id: parent_id,
           dependencies: payload.fetch('dependencies', []),
+          task_type: payload.fetch('task_type', 'simple'),
+          requirements: payload.fetch('requirements', {}),
+          acceptance_criteria: payload.fetch('acceptance_criteria', []),
+          success_criteria: payload.fetch('success_criteria', []),
+          failure_criteria: payload.fetch('failure_criteria', []),
           required_skills: payload.fetch('required_skills', []),
           priority: payload.fetch('priority', 0),
           metadata: payload.fetch('metadata', {})
@@ -57,7 +65,10 @@ module SmartTodo
           agent_id: payload.fetch('agent_id'),
           result: payload.fetch('result'),
           summary: payload['summary'],
-          detail: payload.fetch('detail', {})
+          detail: payload.fetch('detail', {}),
+          completion_status: payload['completion_status'],
+          task_result: payload['task_result'],
+          execution_logs: payload['execution_logs']
         )
         JSON.generate(task)
       end
@@ -93,8 +104,24 @@ module SmartTodo
         )
       end
 
+      get '/tasks/:id/subtasks' do
+        JSON.generate(service.list_subtasks(parent_task_id: params['id']))
+      end
+
       get '/tasks' do
-        JSON.generate(service.list_tasks(status: params['status']))
+        JSON.generate(
+          service.list_tasks(
+            filters: {
+              'status' => params['status'],
+              'task_type' => params['task_type'],
+              'parent_id' => params['parent_id'],
+              'actual_executor' => params['actual_executor'],
+              'completion_status' => params['completion_status'],
+              'required_skill' => params['required_skill'],
+              'suggested_tool' => params['suggested_tool']
+            }
+          )
+        )
       end
 
       get '/tasks/:id' do
@@ -102,11 +129,13 @@ module SmartTodo
       end
 
       error SmartTodo::NotFoundError do
+        log_exception(env['sinatra.error'])
         status 404
         JSON.generate(error: env['sinatra.error'].message)
       end
 
       error SmartTodo::ValidationError, KeyError, JSON::ParserError do
+        log_exception(env['sinatra.error'])
         status 422
         JSON.generate(error: env['sinatra.error'].message)
       end
@@ -117,6 +146,7 @@ module SmartTodo
       end
 
       error do
+        log_exception(env['sinatra.error'])
         status 500
         JSON.generate(error: env['sinatra.error'].message)
       end
@@ -132,6 +162,12 @@ module SmartTodo
         return {} if body.nil? || body.empty?
 
         JSON.parse(body)
+      end
+
+      def log_exception(error)
+        return unless error
+
+        warn "#{Time.now.strftime('%Y-%m-%d %H:%M:%S')} - #{error.class} - #{error.message}"
       end
     end
   end

@@ -4,20 +4,28 @@ require 'time'
 
 module SmartTodo
   class Service
+    TASK_TYPES = %w[simple sequential parallel recurring branching].freeze
     TERMINAL_STATUSES = %w[completed failed suspended].freeze
 
     def initialize(store:)
       @store = store
     end
 
-    def add_task(title:, description: nil, parent_id: nil, dependencies: [], required_skills: [], priority: 0, metadata: {})
+    def add_task(title:, description: nil, parent_id: nil, dependencies: [], required_skills: [], priority: 0, metadata: {},
+                 task_type: 'simple', requirements: {}, acceptance_criteria: [], success_criteria: [], failure_criteria: [])
       validate_parent!(parent_id) if parent_id
       dependencies.each { |dep| validate_exists!(dep) }
+      validate_task_type!(task_type)
 
       task = store.create_task(
         'title' => title,
         'description' => description,
         'parent_id' => parent_id,
+        'task_type' => task_type,
+        'requirements' => requirements,
+        'acceptance_criteria' => acceptance_criteria,
+        'success_criteria' => success_criteria,
+        'failure_criteria' => failure_criteria,
         'required_skills' => required_skills,
         'priority' => priority,
         'metadata' => metadata
@@ -31,6 +39,7 @@ module SmartTodo
       add_dependencies.each { |dep| validate_exists!(dep) }
       remove_dependencies.each { |dep| validate_exists!(dep) }
       validate_parent!(updates['parent_id']) if updates.key?('parent_id') && updates['parent_id']
+      validate_task_type!(updates['task_type']) if updates.key?('task_type')
       ensure_children_completed!(task_id) if updates['status'] == 'completed'
 
       task = store.update_task(task_id, updates)
@@ -54,7 +63,8 @@ module SmartTodo
       selected.map { |task| enrich(task) }
     end
 
-    def report_task(task_id:, agent_id:, result:, summary: nil, detail: {})
+    def report_task(task_id:, agent_id:, result:, summary: nil, detail: {}, completion_status: nil, task_result: nil,
+                    execution_logs: nil)
       task = store.task(task_id)
       raise NotFoundError, "task #{task_id} not found" unless task
 
@@ -70,7 +80,12 @@ module SmartTodo
       }
       store.append_report(task_id, report)
 
-      store.update_task(task_id, 'status' => next_status) if next_status
+      task_updates = {}
+      task_updates['status'] = next_status if next_status
+      task_updates['completion_status'] = completion_status || inferred_completion_status(result)
+      task_updates['task_result'] = task_result unless task_result.nil?
+      task_updates['execution_logs'] = Array(execution_logs) unless execution_logs.nil?
+      store.update_task(task_id, task_updates) unless task_updates.empty?
       resolve_executor!(task_id)
       enrich(store.task(task_id))
     end
@@ -82,9 +97,9 @@ module SmartTodo
       enrich(task)
     end
 
-    def list_tasks(status: nil)
+    def list_tasks(filters: {})
       tasks = store.all_task_ids.filter_map { |id| store.task(id) }
-      tasks = tasks.select { |task| task['status'] == status } if status
+      tasks = tasks.select { |task| match_filters?(task, filters) }
       tasks.sort_by { |task| [-task['priority'], task['created_at']] }
            .map { |task| enrich(task) }
     end
@@ -99,11 +114,24 @@ module SmartTodo
           description: attrs['description'],
           parent_id: parent_task_id,
           dependencies: attrs.fetch('dependencies', []),
+          task_type: attrs.fetch('task_type', 'simple'),
+          requirements: attrs.fetch('requirements', {}),
+          acceptance_criteria: attrs.fetch('acceptance_criteria', []),
+          success_criteria: attrs.fetch('success_criteria', []),
+          failure_criteria: attrs.fetch('failure_criteria', []),
           required_skills: attrs.fetch('required_skills', []),
           priority: attrs.fetch('priority', 0),
           metadata: attrs.fetch('metadata', {})
         )
       end
+    end
+
+    def list_subtasks(parent_task_id:)
+      validate_exists!(parent_task_id)
+      store.children(parent_task_id)
+           .filter_map { |id| store.task(id) }
+           .sort_by { |task| [-task['priority'], task['created_at']] }
+           .map { |task| enrich(task) }
     end
 
     def reshape_subtask(parent_task_id:, subtask_id:, updates: {}, add_dependencies: [], remove_dependencies: [])
@@ -157,6 +185,25 @@ module SmartTodo
       required.empty? || required.all? { |skill| skills.include?(skill) }
     end
 
+    def match_filters?(task, filters)
+      filters.all? do |key, value|
+        next true if value.nil? || value == ''
+
+        case key.to_s
+        when 'status', 'task_type', 'parent_id', 'actual_executor', 'completion_status'
+          return task['parent_id'].nil? if key.to_s == 'parent_id' && value == 'root'
+
+          task[key.to_s] == value
+        when 'required_skill'
+          task['required_skills'].include?(value)
+        when 'suggested_tool'
+          Array(task.dig('requirements', 'suggested_tools')).include?(value)
+        else
+          true
+        end
+      end
+    end
+
     def map_result_to_status(result)
       mapping = {
         'success' => 'completed',
@@ -168,23 +215,34 @@ module SmartTodo
       mapping[result]
     end
 
+    def inferred_completion_status(result)
+      return nil unless map_result_to_status(result)
+
+      result
+    end
+
     def resolve_executor!(task_id)
       reports = store.reports(task_id)
       winner = reports.select { |r| r['result'] == 'success' }
                       .min_by { |r| Time.parse(r['reported_at']) }
       return unless winner
 
-      store.update_task(task_id, 'actual_executor' => winner['agent_id'], 'status' => 'completed')
+      updates = { 'actual_executor' => winner['agent_id'] }
+      updates['status'] = 'completed' if children_completed?(task_id)
+      store.update_task(task_id, updates)
     end
 
     def ensure_children_completed!(task_id)
-      incomplete = store.children(task_id).any? do |child_id|
-        child = store.task(child_id)
-        child && child['status'] != 'completed'
-      end
-      return unless incomplete
+      return if children_completed?(task_id)
 
       raise ValidationError, "task #{task_id} cannot be completed until all subtasks are completed"
+    end
+
+    def children_completed?(task_id)
+      store.children(task_id).all? do |child_id|
+        child = store.task(child_id)
+        child && child['status'] == 'completed'
+      end
     end
 
     def validate_subtask_of_parent!(parent_task_id, subtask_id)
@@ -196,6 +254,12 @@ module SmartTodo
 
     def validate_parent!(parent_id)
       validate_exists!(parent_id)
+    end
+
+    def validate_task_type!(task_type)
+      return if TASK_TYPES.include?(task_type)
+
+      raise ValidationError, "task_type must be one of: #{TASK_TYPES.join(', ')}"
     end
 
     def validate_exists!(task_id)

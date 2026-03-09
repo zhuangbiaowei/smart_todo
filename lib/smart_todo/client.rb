@@ -14,6 +14,11 @@ module SmartTodo
     def seek_tasks(**kwargs) = service.seek_tasks(**kwargs)
     def report_task(**kwargs) = service.report_task(**kwargs)
     def fetch_task(task_id:) = service.fetch_task(task_id: task_id)
+    def list_tasks(filters: {}) = service.list_tasks(filters: filters)
+    def add_subtasks(**kwargs) = service.add_subtasks(**kwargs)
+    def list_subtasks(**kwargs) = service.list_subtasks(**kwargs)
+    def reshape_subtask(**kwargs) = service.reshape_subtask(**kwargs)
+    def delete_subtask(**kwargs) = service.delete_subtask(**kwargs)
 
     private
 

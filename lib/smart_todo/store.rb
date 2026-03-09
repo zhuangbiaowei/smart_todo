@@ -19,11 +19,19 @@ module SmartTodo
         'status' => attributes.fetch('status', 'pending'),
         'parent_id' => attributes['parent_id'],
         'priority' => attributes.fetch('priority', 0).to_i,
+        'task_type' => attributes.fetch('task_type', 'simple'),
+        'requirements' => attributes.fetch('requirements', {}),
+        'acceptance_criteria' => Array(attributes.fetch('acceptance_criteria', [])),
+        'success_criteria' => Array(attributes.fetch('success_criteria', [])),
+        'failure_criteria' => Array(attributes.fetch('failure_criteria', [])),
         'required_skills' => Array(attributes['required_skills']),
         'metadata' => attributes.fetch('metadata', {}),
         'created_at' => now,
         'updated_at' => now,
-        'actual_executor' => nil
+        'actual_executor' => nil,
+        'completion_status' => attributes['completion_status'],
+        'task_result' => attributes['task_result'],
+        'execution_logs' => Array(attributes.fetch('execution_logs', []))
       }
 
       redis.multi do |tx|
@@ -148,11 +156,19 @@ module SmartTodo
         'status' => task['status'],
         'parent_id' => task['parent_id'],
         'priority' => task['priority'],
+        'task_type' => task['task_type'],
+        'requirements' => JSON.generate(task['requirements']),
+        'acceptance_criteria' => JSON.generate(task['acceptance_criteria']),
+        'success_criteria' => JSON.generate(task['success_criteria']),
+        'failure_criteria' => JSON.generate(task['failure_criteria']),
         'required_skills' => JSON.generate(task['required_skills']),
         'metadata' => JSON.generate(task['metadata']),
         'created_at' => task['created_at'],
         'updated_at' => task['updated_at'],
-        'actual_executor' => task['actual_executor']
+        'actual_executor' => task['actual_executor'],
+        'completion_status' => task['completion_status'],
+        'task_result' => JSON.generate(task['task_result']),
+        'execution_logs' => JSON.generate(task['execution_logs'])
       }.compact
     end
 
@@ -164,11 +180,19 @@ module SmartTodo
         'status' => raw['status'],
         'parent_id' => raw['parent_id'],
         'priority' => raw['priority'].to_i,
+        'task_type' => raw.fetch('task_type', 'simple'),
+        'requirements' => JSON.parse(raw.fetch('requirements', '{}')),
+        'acceptance_criteria' => JSON.parse(raw.fetch('acceptance_criteria', '[]')),
+        'success_criteria' => JSON.parse(raw.fetch('success_criteria', '[]')),
+        'failure_criteria' => JSON.parse(raw.fetch('failure_criteria', '[]')),
         'required_skills' => JSON.parse(raw.fetch('required_skills', '[]')),
         'metadata' => JSON.parse(raw.fetch('metadata', '{}')),
         'created_at' => raw['created_at'],
         'updated_at' => raw['updated_at'],
-        'actual_executor' => raw['actual_executor']
+        'actual_executor' => raw['actual_executor'],
+        'completion_status' => raw['completion_status'],
+        'task_result' => raw.key?('task_result') ? JSON.parse(raw['task_result']) : nil,
+        'execution_logs' => JSON.parse(raw.fetch('execution_logs', '[]'))
       }
     end
 
@@ -183,7 +207,9 @@ module SmartTodo
     def reports_key(task_id) = "smart_todo:task:#{task_id}:reports"
 
     def clear_nil_fields(key, task)
-      nil_fields = %w[description parent_id actual_executor].select { |field| task[field].nil? }
+      nil_fields = %w[description parent_id actual_executor completion_status task_result].select do |field|
+        task[field].nil?
+      end
       return if nil_fields.empty?
 
       redis.hdel(key, *nil_fields)
